@@ -27,6 +27,7 @@ A research project (ADS 5984) auditing bias in LLM-based resume screening. LLMs 
 - `analyze_significance.py`: runs the significance tests on a run folder's `scores.json` and writes `significance.md` and `significance.json` to the same folder.
 - `results/ARC/vt-arc-llm_2026-11-11/`: the DeepSeek 4.1 Flash run (served by ARC as `vt-arc-llm`), with the findings report.
 - `run_evaluation.py`: an older scorer that calls `opencode run` (tool-less `scorer` agent, `--pure`, empty scratch cwd; model arg `provider/model`, default `vt-arc/vt-arc-llm`) and adds a deductions addendum to the prompt. It is superseded by `score_resumes.py`.
+- `run_evaluation_claude.py`: the same older scorer, but it calls `claude -p` (Claude Code CLI, tool-less, no session persistence; model arg is a Claude alias or ID, default `sonnet`) and writes `evaluation_claude.json`.
 - `backup/`: earlier prompt and listing drafts. These are superseded and kept only for reference.
 
 ## Commands

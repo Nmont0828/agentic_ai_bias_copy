@@ -4,14 +4,23 @@ Base resumes are cv/<tier>/NN_resume_<tier>.md (name-free baseline). Variants
 are the files listed in cv/variants_manifest.json, built by make_variants.py:
 race x gender x age (27 cells), each signaled holistically (name, pronouns,
 locations, schools, graduation years, community lines, interests).
-Each resume is scored in a fresh, tool-less `claude -p` call (one resume per
-call), N_SAMPLES times. Results go to evaluation.json.
+Each resume is scored in a fresh, tool-less `opencode run` session (one resume
+per call), N_SAMPLES times. The system prompt is installed as a throwaway
+OpenCode agent ("scorer") via OPENCODE_CONFIG_CONTENT, with every tool and
+permission denied, and opencode runs with --pure from an empty scratch
+directory so no project AGENTS.md/CLAUDE.md or plugins leak into the context.
+Results go to evaluation.json.
+
+Usage: python3 run_evaluation.py [provider/model]   (default vt-arc/vt-arc-llm,
+a provider/model defined in ~/.config/opencode/opencode.json)
 """
 
 import json
 import re
+import os
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,9 +31,10 @@ POSTING = ROOT / "cto_job_listing.qmd"
 SCORING_PROMPT = ROOT / "scoring_system_prompt.md"
 OUT = ROOT / "evaluation.json"
 
-MODEL = sys.argv[1] if len(sys.argv) > 1 else "sonnet"
+MODEL = sys.argv[1] if len(sys.argv) > 1 else "vt-arc/vt-arc-llm"
+TEMPERATURE = 0.7
 N_SAMPLES = 3
-WORKERS = 6
+WORKERS = 3  # ARC allows at most 3 concurrent requests
 MANIFEST = CV_DIR / "variants_manifest.json"
 TIERS = ["high", "medium", "low"]
 
@@ -64,21 +74,47 @@ def build_jobs():
                 yield base, vkey, cell, (ROOT / m["file"]).read_text()
 
 
-def score(system_prompt: str, user_msg: str) -> dict:
+def opencode_env(system_prompt: str) -> dict:
+    """Environment that defines a tool-less 'scorer' agent carrying the system prompt."""
+    agent = {
+        "mode": "primary",
+        "prompt": system_prompt,
+        "temperature": TEMPERATURE,
+        "tools": {"*": False},
+        "permission": {"*": "deny"},
+    }
+    return {**os.environ, "OPENCODE_CONFIG_CONTENT": json.dumps({"agent": {"scorer": agent}})}
+
+
+def score(env: dict, user_msg: str) -> dict:
     ts = datetime.now(timezone.utc).isoformat()
-    proc = subprocess.run(
-        ["claude", "-p", "--model", MODEL, "--system-prompt", system_prompt,
-         "--tools", "", "--strict-mcp-config", "--setting-sources", "",
-         "--no-session-persistence", "--output-format", "json"],
-        input=user_msg, capture_output=True, text=True, cwd="/tmp", timeout=300,
-    )
-    rec = {"timestamp": ts, "returncode": proc.returncode}
-    try:
-        envelope = json.loads(proc.stdout)
-        raw = envelope.get("result", "")
-        rec["model_id"] = next(iter(envelope.get("modelUsage", {}) or {}), MODEL)
-    except json.JSONDecodeError:
-        raw = proc.stdout
+    with tempfile.TemporaryDirectory() as cwd:   # empty dir: no AGENTS.md / project config
+        proc = subprocess.run(
+            ["opencode", "run", "--pure", "--agent", "scorer", "-m", MODEL,
+             "--format", "json", user_msg],
+            capture_output=True, text=True, cwd=cwd, env=env, timeout=300,
+            stdin=subprocess.DEVNULL,
+        )
+    rec = {"timestamp": ts, "returncode": proc.returncode, "model_id": MODEL}
+    texts, reasoning = [], []
+    for line in proc.stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        part = ev.get("part") or {}
+        if ev.get("type") == "text":
+            texts.append(part.get("text", ""))
+        elif ev.get("type") == "reasoning":
+            reasoning.append(part.get("text", ""))
+        elif ev.get("type") == "step_finish":
+            rec["tokens"] = part.get("tokens")
+        elif ev.get("type") == "error":
+            rec["error"] = ev.get("error")
+    raw = "".join(texts)
+    if reasoning:
+        rec["reasoning"] = "".join(reasoning)
+    if not raw:
         rec["stderr"] = proc.stderr[-500:]
     rec["raw_output"] = raw
     m = re.search(r"\{.*\}", raw, re.S)
@@ -95,6 +131,7 @@ def score(system_prompt: str, user_msg: str) -> dict:
 
 def main():
     system_prompt = load_system_prompt()
+    env = opencode_env(system_prompt)
     posting = load_posting()
     jobs = [(path, vkey, cell, i, text)
             for path, vkey, cell, text in build_jobs()
@@ -103,7 +140,7 @@ def main():
     def run(job):
         path, vkey, cell, i, text = job
         msg = f"JOB POSTING:\n{posting}\n\nRESUME:\n{text}"
-        r = score(system_prompt, msg)
+        r = score(env, msg)
         print(f"{path.parent.name}/{path.name:24s} {vkey:62s} s{i} -> {r.get('score')}", flush=True)
         return job, r, text
 
@@ -130,7 +167,8 @@ def main():
     out = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model": MODEL,
-        "temperature": "CLI default (claude -p does not expose temperature)",
+        "temperature": TEMPERATURE,
+        "runner": "opencode run --pure (agent: scorer, all tools denied)",
         "samples_per_variant": N_SAMPLES,
         "system_prompt": system_prompt,
         "job_posting_source": str(POSTING.relative_to(ROOT)),

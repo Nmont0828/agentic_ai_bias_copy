@@ -34,7 +34,7 @@ OUT = ROOT / "evaluation.json"
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "vt-arc/vt-arc-llm"
 TEMPERATURE = 0.7
 N_SAMPLES = 3
-WORKERS = 6
+WORKERS = 3  # ARC allows at most 3 concurrent requests
 MANIFEST = CV_DIR / "variants_manifest.json"
 TIERS = ["high", "medium", "low"]
 

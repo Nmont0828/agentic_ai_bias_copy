@@ -111,6 +111,9 @@ def endpoint_config():
     return {"base_url": base, "api_key": key}, os.environ["ANTHROPIC_MODEL"].strip(), ep
 
 
+ARC_MAX_WORKERS = 3
+
+
 def infer_source(endpoint):
     e = endpoint.lower()
     if "arc.vt.edu" in e:
@@ -243,6 +246,8 @@ def run(args):
     cfg, model, endpoint = endpoint_config()
     run_dir = resolve_run_dir(args, model, endpoint)
     run_dir.mkdir(parents=True, exist_ok=True)
+    if "arc.vt.edu" in (endpoint or "") and args.workers > ARC_MAX_WORKERS:
+        args.workers = ARC_MAX_WORKERS  # ARC allows at most 3 concurrent requests
     sys.stdout = Tee(run_dir / "run.log")
     print(f"=== {datetime.now(timezone.utc).isoformat()}  model={model}  endpoint={endpoint}\n"
           f"run dir: {run_dir.relative_to(ROOT) if run_dir.is_relative_to(ROOT) else run_dir}", flush=True)
@@ -426,7 +431,8 @@ def main():
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--max-tokens", type=int, default=4000, help="includes the model's thinking tokens")
-    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--workers", type=int, default=8,
+                    help=f"concurrent calls (default 8; capped at {ARC_MAX_WORKERS} for the ARC endpoint)")
     ap.add_argument("--tier", choices=TIERS)
     ap.add_argument("--limit", type=int, help="score only the first N resumes (smoke test)")
     ap.add_argument("--keep-reasoning", action=argparse.BooleanOptionalAction, default=True,
